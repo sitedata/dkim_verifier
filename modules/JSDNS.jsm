@@ -662,6 +662,8 @@ function queryDNSRecursive(server, host, recordtype, callback, callbackdata, hop
 	// Prepend query message length
 	query = DNS_wordToStr(query.length) + query;
 	
+	log.debug("TRACE: query prepared");
+	
 	var listener = {
 		msgsize : null,
 		readcount : 0,
@@ -669,6 +671,11 @@ function queryDNSRecursive(server, host, recordtype, callback, callbackdata, hop
 		responseBody : "",
 		done : false,
 		finished : function(data, status) {
+			log.debug("TRACE: listener finished called");
+			if (status)
+				log.debug("TRACE: listener finished called with status '" + status + "' and data: " + data.toSource());
+			else
+				log.debug("TRACE: listener finished called with status '" + status + "' and data: " + data);
 			if (status !== 0) {
 				if (status === 2152398861) { // NS_ERROR_CONNECTION_REFUSED
 					log.debug("Resolving " + host + "/" + recordtype + ": DNS server " + server + " refused a TCP connection.");
@@ -700,6 +707,7 @@ function queryDNSRecursive(server, host, recordtype, callback, callbackdata, hop
 					// start query again for next server
 					queryDNSRecursive(null, host, recordtype, callback, callbackdata, hops, servers);
 				}
+				log.debug("TRACE: listener finished return");
 				return;
 			}
 			
@@ -708,9 +716,16 @@ function queryDNSRecursive(server, host, recordtype, callback, callbackdata, hop
 				log.debug("Resolving " + host + "/" + recordtype + ": Response was incomplete.");
 				callback(null, callbackdata, DNS_STRINGS.formatStringFromName("INCOMPLETE_RESPONSE", [server], 1));
 			}
+			log.debug("TRACE: listener finished end");
 		},
 		process : function(data){
+			log.debug("TRACE: listener process called");
+			if (data)
+				log.debug("TRACE: listener process called with: " + data.toSource());
+			else 
+				log.debug("TRACE: listener process called with: " + data);
 			if (this.done) {
+				log.debug("TRACE: listener process return false");
 				return false;
 			}
 			
@@ -730,12 +745,16 @@ function queryDNSRecursive(server, host, recordtype, callback, callbackdata, hop
 					this.responseHeader = this.responseHeader.substr(2); // chop the length field
 					this.done = true;
 					DNS_getRDData(this.responseHeader + this.responseBody, server, host, recordtype, callback, callbackdata, hops);
+					log.debug("TRACE: listener process return false");
 					return false;
 				}
 			}
+			log.debug("TRACE: listener process return true");
 			return true;
 		}
 	};
+	
+	log.debug("TRACE: listener prepared");
 	
 	// allow server to be either a hostname or hostname:port
 	var server_hostname = server;
@@ -749,6 +768,7 @@ function queryDNSRecursive(server, host, recordtype, callback, callbackdata, hop
 	if (ex !== null) {
 		log.fatal("" + ex + "\n" + ex.stack);
 	}
+	log.debug("TRACE: DNS_readAllFromSocket called");
 }
 
 function DNS_readDomain(ctx) {
@@ -986,6 +1006,7 @@ function DNS_readAllFromSocket(host,port,outputData,listener)
 {
 	"use strict";
 	
+	log.debug("TRACE: DNS_readAllFromSocket begin");
 	try {
 		var proxy = null;
 		if (prefs.getBoolPref("proxy.enable")) {
@@ -998,32 +1019,82 @@ function DNS_readAllFromSocket(host,port,outputData,listener)
 				0, 0xffffffff, null
 			);
 		}
+	
+		log.debug("TRACE: DNS_readAllFromSocket got proxy");
 
 		var transportService =
 			Cc["@mozilla.org/network/socket-transport-service;1"].
 			getService(Ci.nsISocketTransportService);
 		var transport = transportService.
 			createTransport(null,0,host,port,proxy);
+	
+		log.debug("TRACE: DNS_readAllFromSocket after createTransport");
+		
+		Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
+		transport.setEventSink({
+		  onTransportStatus: function(transport, status, progress, progressMax)
+		  {
+// STATUS_RESOLVING 	0x804b0003 (2152398851) 	Transport is resolving the host. Usually a DNS lookup.
+// STATUS_RESOLVED 	0x804b000b (2152398859) 	Transport has resolved the host.
+// STATUS_CONNECTING_TO 	0x804b0007 (2152398855) 	 
+// STATUS_CONNECTED_TO 	0x804b0004 (2152398852)	 
+// STATUS_SENDING_TO 	0x804b0005 (2152398853)
+// STATUS_WAITING_FOR 	0x804b000a (2152398858)	 
+// STATUS_RECEIVING_FROM 	0x804b0006 (2152398854)
+			log.debug("TRACE: onTransportStatus: status=" + status + " progress=" + progress+ " progressMax=" + progressMax);
+		  },
+		  QueryInterface: XPCOMUtils.generateQI([Components.interfaces.nsITransportEventSync])
+		}, Services.tm.currentThread);
+	
+		log.debug("TRACE: DNS_readAllFromSocket createTransport.isAlive(): " + transport.isAlive());
 
 		// change timeout for connection
 		transport.setTimeout(transport.TIMEOUT_CONNECT, timeout_connect);
 		if (timeout_read_write) {
 			transport.setTimeout(transport.TIMEOUT_READ_WRITE, timeout_read_write);
-			log.trace("timeout_read_write set to "+timeout_read_write);
+			log.debug("timeout_read_write set to "+timeout_read_write);
+		} else {
+			transport.setTimeout(transport.TIMEOUT_READ_WRITE, timeout_connect);
+			log.debug("timeout_read_write set from TIMEOUT_CONNECT to "+timeout_connect);		
 		}
+	
+		log.debug("TRACE: DNS_readAllFromSocket after setTimeout");
 		
 		var outstream = transport.openOutputStream(0,0,0);
-		outstream.write(outputData,outputData.length);
+		var nout = outstream.write(outputData,outputData.length);
+		log.debug("TRACE: DNS_readAllFromSocket written bytes to stream: " + nout + " of " + outputData.length);
+		outstream.flush();
+	
+		log.debug("TRACE: DNS_readAllFromSocket createTransport.isAlive(): " + transport.isAlive());
 
 		var stream = transport.openInputStream(0,0,0);
 		var instream = Components.classes["@mozilla.org/binaryinputstream;1"]
 			.createInstance(Components.interfaces.nsIBinaryInputStream);
 		instream.setInputStream(stream);
+	
+		log.debug("TRACE: DNS_readAllFromSocket after streams");
+	
+		log.debug("TRACE: DNS_readAllFromSocket createTransport.isAlive(): " + transport.isAlive());
 
 		var dataListener = {
 			data : "",
-			onStartRequest: function(/* request, context */){},
+			onStartRequest: function(/* request, context */){
+				log.debug("TRACE: dataListener onStartRequest");
+			},
 			onStopRequest: function(request, context, status){
+				log.debug("TRACE: dataListener onStopRequest");
+				if (request)
+					log.debug("TRACE: dataListener onStopRequest request: " + request.toSource());
+				else
+					log.debug("TRACE: dataListener onStopRequest request: " + request);
+				if (context)
+					log.debug("TRACE: dataListener onStopRequest context: " + context.toSource());
+				else
+					log.debug("TRACE: dataListener onStopRequest context: " + context);
+				if (status)
+					log.debug("TRACE: dataListener onStopRequest status: " + status.toSource());
+				else
+					log.debug("TRACE: dataListener onStopRequest status: " + status);
 				if (listener.finished !== null) {
 					listener.finished(this.data, status);
 				}
@@ -1032,6 +1103,27 @@ function DNS_readAllFromSocket(host,port,outputData,listener)
 				//DNS_Debug("DNS: Connection closed (" + host + ")");
 			},
 			onDataAvailable: function(request, context, inputStream, offset, count){
+				log.debug("TRACE: dataListener onDataAvailable");
+				if (request)
+					log.debug("TRACE: dataListener onDataAvailable request: " + request.toSource());
+				else
+					log.debug("TRACE: dataListener onDataAvailable request: " + request);
+				if (context)
+					log.debug("TRACE: dataListener onDataAvailable context: " + context.toSource());
+				else
+					log.debug("TRACE: dataListener onDataAvailable context: " + context);
+				if (inputStream)
+					log.debug("TRACE: dataListener onDataAvailable inputStream: " + inputStream.toSource());
+				else
+					log.debug("TRACE: dataListener onDataAvailable inputStream: " + inputStream);
+				if (offset)
+					log.debug("TRACE: dataListener onDataAvailable offset: " + offset.toSource());
+				else
+					log.debug("TRACE: dataListener onDataAvailable offset: " + offset);
+				if (count)
+					log.debug("TRACE: dataListener onDataAvailable count: " + count.toSource());
+				else
+					log.debug("TRACE: dataListener onDataAvailable count: " + count);
 				//DNS_Debug("DNS: Got data (" + host + ")");
 				for (var i = 0; i < count; i++) {
 					this.data += String.fromCharCode(instream.read8());
@@ -1045,15 +1137,20 @@ function DNS_readAllFromSocket(host,port,outputData,listener)
 				}
 			}
 		};
+	
+		log.debug("TRACE: DNS_readAllFromSocket after dataListener");
 		
 		var pump = Components.
 			classes["@mozilla.org/network/input-stream-pump;1"].
 			createInstance(Components.interfaces.nsIInputStreamPump);
 		pump.init(stream, -1, -1, 0, 0, false);
 		pump.asyncRead(dataListener,null);
+		log.debug("TRACE: DNS_readAllFromSocket after pump");
 	} catch (ex) {
+		log.debug("TRACE: DNS_readAllFromSocket error");
 		return ex;
 	}
+	log.debug("TRACE: DNS_readAllFromSocket end");
 	return null;
 }
 
